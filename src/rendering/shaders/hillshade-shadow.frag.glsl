@@ -454,22 +454,37 @@ void main() {
         dayColor = satellite * lit * slopeShade * shadowShade;
       } else {
         // AO 기반 셰이딩 (wwwtyro 방식) + UI 옵션 적용
+        // Atmosphere ON과 동일한 순차 곱셈 방식
         float processedShadow = shadow;
         if (uShadowBlendMode > 1.5) {
           processedShadow = pow(shadow, uShadowPow);
         }
 
-        float lighting = uAoShadowWeight * processedShadow + uAoDiffuseWeight * ao;
+        // 1. 흰색 바탕에서 시작
+        float layer = 1.0;
 
-        // Group Blend Mode 적용
-        if (uGroupBlendMode < 0.5) {
-          dayColor = satellite * lighting;                    // Multiply
-        } else if (uGroupBlendMode < 1.5) {
-          dayColor = overlayVec3(satellite, lighting);        // Overlay
+        // 2. Shadow 블렌딩 (uShadowBlendMode에 따라)
+        float shadowResult;
+        if (uShadowBlendMode < 0.5) {
+          shadowResult = hardLight(layer, processedShadow);  // Hard Light
         } else {
-          dayColor = vec3(hardLight(satellite.r, lighting),
-                          hardLight(satellite.g, lighting),
-                          hardLight(satellite.b, lighting));  // Hard Light
+          shadowResult = layer * processedShadow;            // Multiply (1, 2 모두)
+        }
+        layer = mix(layer, shadowResult, uAoShadowWeight);
+
+        // 3. AO Multiply (투명도 = uAoDiffuseWeight)
+        float aoResult = layer * ao;
+        layer = mix(layer, aoResult, uAoDiffuseWeight);
+
+        // 4. 그룹을 위성사진에 합성 (uGroupBlendMode에 따라)
+        if (uGroupBlendMode < 0.5) {
+          dayColor = satellite * layer;                              // Multiply
+        } else if (uGroupBlendMode < 1.5) {
+          dayColor = overlayVec3(satellite, layer);                  // Overlay
+        } else {
+          dayColor = vec3(hardLight(satellite.r, layer),
+                          hardLight(satellite.g, layer),
+                          hardLight(satellite.b, layer));            // Hard Light
         }
       }
 

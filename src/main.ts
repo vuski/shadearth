@@ -1018,16 +1018,13 @@ window.addEventListener("resize", () => {
   placeLabelsManager.setSize(window.innerWidth, window.innerHeight);
   tilesRenderer.setResolutionFromRenderer(camera, renderer);
 
-  // 화면이 클수록 errorTarget을 높여서 타일 로딩량 조절
-  // 기본 1920x1080 기준으로 설정, 더 큰 화면은 errorTarget 증가
-  // const basePixels = 1920 * 1080;
-  // const currentPixels = window.innerWidth * window.innerHeight;
-  // const scaleFactor = Math.sqrt(currentPixels / basePixels);
-  // const adjustedErrorTarget = renderSettings.errorTarget * scaleFactor;
-  // tilesRenderer.errorTarget = Math.max(renderSettings.errorTarget, adjustedErrorTarget);
+  // EffectComposer 리사이즈
+  if (effectComposer) {
+    effectComposer.setSize(window.innerWidth, window.innerHeight);
+  }
 
-  // renderState.needsRender = true;
-  // console.log(`[Resize] ${window.innerWidth}x${window.innerHeight}, errorTarget: ${tilesRenderer.errorTarget.toFixed(2)}`);
+  // 화면 갱신
+  renderState.needsRender = true;
 });
 
 function clampCameraDistance(): void {
@@ -1482,6 +1479,8 @@ settingsGui
     shadowRenderer.setElevationScale(value);
     // hard shadow 모드로 전환
     switchToHardShadow();
+    // 화면 갱신
+    renderState.needsRender = true;
   });
 
 settingsGui
@@ -1490,6 +1489,15 @@ settingsGui
   .onChange((value: number) => {
     shadowRenderer.setAoRangeScale(value);
     // hard shadow 모드로 전환
+    switchToHardShadow();
+  });
+
+settingsGui
+  .add(renderSettings, "sunJitter", 1, 500, 1)
+  .name("Sun Jitter")
+  .onChange((value: number) => {
+    shadowRenderer.setSunRadiusMultiplier(value);
+    shadowRenderer.reset();
     switchToHardShadow();
   });
 
