@@ -15,7 +15,7 @@ const MARGIN = "10px";
 // const PANEL_GAP = "10px"; // 현재 미사용
 
 // 예상 패널 높이 (lil-gui 기준)
-const SETTINGS_HEIGHT = 150; // Scene Settings 패널
+const SETTINGS_HEIGHT = 170; // Scene Settings 패널
 const RENDER_HEIGHT = 50; // Render 패널
 const SUN_POSITION_HEIGHT = 190; // 태양 위치 패널
 
