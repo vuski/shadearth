@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <!-- Google tag (gtag.js) -->
+    <script
+      async
+      src="https://www.googletagmanager.com/gtag/js?id=G-XXXXXXXXXX"
+    ></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag() {
+        dataLayer.push(arguments);
+      }
+      gtag("js", new Date());
+      gtag("config", "G-XXXXXXXXXX");
+    </script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ShadEarth - Interactive 3D Globe with Terrain Shadows</title>
+
+    <!-- SEO Meta Tags -->
+    <meta
+      name="description"
+      content="Explore Earth in stunning 3D with realistic terrain shadows, atmospheric scattering, and day/night visualization. An interactive WebGL globe powered by Three.js."
+    />
+    <meta
+      name="keywords"
+      content="3D globe, earth visualization, terrain shadows, WebGL, Three.js, interactive map, satellite imagery, DEM, hillshade, atmospheric rendering, 지구 시각화, 3D 지구본, 지형 그림자"
+    />
+    <meta name="author" content="VWL Inc." />
+    <meta name="robots" content="index, follow" />
+    <link rel="canonical" href="https://shadearth.vw-lab.com" />
+
+    <!-- Favicon -->
+    <link rel="icon" type="image/png" sizes="64x64" href="/favicon-64x64.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+    <link rel="shortcut icon" href="/favicon.ico" />
+
+    <!-- Open Graph -->
+    <meta property="og:title" content="ShadEarth - Interactive 3D Globe with Terrain Shadows" />
+    <meta
+      property="og:description"
+      content="Explore Earth in stunning 3D with realistic terrain shadows, atmospheric scattering, and day/night visualization. An interactive WebGL globe."
+    />
+    <meta property="og:url" content="https://shadearth.vw-lab.com" />
+    <meta property="og:image" content="https://shadearth.vw-lab.com/og-image.png" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="ShadEarth" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:locale:alternate" content="ko_KR" />
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="ShadEarth - Interactive 3D Globe" />
+    <meta
+      name="twitter:description"
+      content="Explore Earth in stunning 3D with realistic terrain shadows, atmospheric scattering, and day/night visualization."
+    />
+    <meta
+      name="twitter:image"
+      content="https://shadearth.vw-lab.com/og-image.png"
+    />
+
+    <!-- JSON-LD Structured Data -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "ShadEarth",
+        "url": "https://shadearth.vw-lab.com",
+        "description": "Interactive 3D globe visualization with realistic terrain shadows, atmospheric scattering, and day/night rendering",
+        "applicationCategory": "Multimedia",
+        "operatingSystem": "Web Browser",
+        "author": {
+          "@type": "Organization",
+          "name": "VWL Inc.",
+          "url": "https://www.vw-lab.com"
+        },
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "USD"
+        },
+        "keywords": "3D globe, earth visualization, terrain shadows, WebGL, Three.js"
+      }
+    </script>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+      }
+      #app {
+        width: 100%;
+        height: 100%;
+      }
+      canvas {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
