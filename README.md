@@ -1,4 +1,4 @@
-# GeoShadEarth
+# ShadEarth
 
 A photorealistic 3D globe renderer with terrain-based shadow and ambient occlusion effects.
 
