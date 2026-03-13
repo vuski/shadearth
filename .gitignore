@@ -134,3 +134,9 @@ dist
 .yarn/build-state.yml
 .yarn/install-state.gz
 .pnp.*
+
+
+*.pmtiles
+
+# Claude Code local settings
+.claude/

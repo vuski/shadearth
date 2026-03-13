@@ -1,0 +1,207 @@
+/**
+ * Shadow Accumulate Shader
+ * 프레임별 1샘플 계산 후 누적
+ * 인접 타일 텍스처를 사용하여 경계 처리
+ */
+
+precision highp float;
+
+// 중앙 타일
+uniform sampler2D demMap;
+
+// 인접 8개 타일
+uniform sampler2D demMapN;
+uniform sampler2D demMapNE;
+uniform sampler2D demMapE;
+uniform sampler2D demMapSE;
+uniform sampler2D demMapS;
+uniform sampler2D demMapSW;
+uniform sampler2D demMapW;
+uniform sampler2D demMapNW;
+
+// 인접 타일 존재 여부
+uniform float uHasN;
+uniform float uHasNE;
+uniform float uHasE;
+uniform float uHasSE;
+uniform float uHasS;
+uniform float uHasSW;
+uniform float uHasW;
+uniform float uHasNW;
+
+// 누적 관련
+uniform sampler2D uPrevShadow;  // 이전 프레임 누적 결과
+uniform float uWeight;          // 1/totalFrames
+
+// 태양 방향 (이미 jittered)
+uniform vec3 uSunDirection;
+
+// 타일 위치 (로컬 좌표계 변환용)
+uniform vec3 uTileCenter;    // 타일 중심의 월드 좌표 (정규화된 구 표면)
+uniform vec3 uTileEast;      // 동쪽 방향
+uniform vec3 uTileNorth;     // 북쪽 방향
+uniform float uZoomLevel;    // 줌 레벨
+uniform float uMetersPerTexel;
+uniform float uElevationScale;
+uniform float uTileX;
+uniform float uTileY;
+uniform vec2 uDemUvScale;
+uniform vec2 uDemUvOffset;
+
+varying vec2 vUv;
+
+// Terrarium 디코딩
+float decodeTerrarium(vec4 color) {
+  return (color.r * 255.0 * 256.0 + color.g * 255.0 + color.b * 255.0 / 256.0) - 32768.0;
+}
+
+// DEM UV 변환 (z > 12일 때 상위 타일의 해당 부분만 샘플링)
+vec2 transformDemUv(vec2 uv) {
+  return uv * uDemUvScale + uDemUvOffset;
+}
+
+// DEM UV에서 직접 고도 샘플링 (UV 변환 없음)
+float sampleElevationDirect(vec2 demUv) {
+  return decodeTerrarium(texture2D(demMap, clamp(demUv, 0.0, 1.0)));
+}
+
+void buildSurfaceFrame(vec3 surfaceNormal, out vec3 east, out vec3 north) {
+  vec3 worldNorth = vec3(0.0, 1.0, 0.0);
+  north = worldNorth - surfaceNormal * dot(worldNorth, surfaceNormal);
+  float northLen2 = dot(north, north);
+  if (northLen2 < 1e-8) {
+    north = normalize(uTileNorth);
+    east = normalize(cross(north, surfaceNormal));
+    return;
+  }
+  north = normalize(north);
+  east = normalize(cross(north, surfaceNormal));
+}
+
+// Shadow ray 추적 - DEM UV 공간에서 수행
+float traceShadow(vec2 startUV, float startElevation) {
+  // 타일 x/y/z와 UV로 픽셀의 구면 위치를 정확히 복원 (WebMercator 역변환)
+  float n = pow(2.0, uZoomLevel);
+  float tileXF = uTileX + startUV.x;
+  float tileYF = uTileY + (1.0 - startUV.y);
+  float lon = (tileXF / n) * (2.0 * 3.141592653589793) - 3.141592653589793;
+  float mercY = 3.141592653589793 * (1.0 - (2.0 * tileYF / n));
+  float lat = atan(sinh(mercY));
+  vec3 pixelPos = normalize(vec3(
+    cos(lat) * cos(lon),
+    sin(lat),
+    -cos(lat) * sin(lon)
+  ));
+  vec3 east;
+  vec3 north;
+  buildSurfaceFrame(pixelPos, east, north);
+  vec3 up = pixelPos;
+
+  vec3 localSunDir = vec3(
+    dot(uSunDirection, east),
+    dot(uSunDirection, north),
+    dot(uSunDirection, up)
+  );
+
+  if (localSunDir.z < 0.01) return 1.0;
+
+  vec2 sunDir2D = vec2(localSunDir.x, localSunDir.y);
+  float sunAltitude = localSunDir.z;
+
+  float horizLen = length(sunDir2D);
+  if (horizLen < 0.001) return 1.0;
+
+  vec2 rayDir = normalize(sunDir2D);
+
+  float metersPerTexel = max(0.01, uMetersPerTexel);
+  float texelSize = 1.0 / 512.0;
+  float targetMetersPerStep = 120.0;
+  float stepTexels = clamp(targetMetersPerStep / metersPerTexel, 0.05, 1.0);
+  float horizontalMetersPerStep = metersPerTexel * stepTexels;
+  float stepSize = stepTexels * texelSize;
+  float heightPerStep = horizontalMetersPerStep * (sunAltitude / horizLen) / uElevationScale;
+
+  // DEM UV 공간에서 시작 (타일 UV → DEM UV 변환)
+  vec2 pos = transformDemUv(startUV);
+  // ray 방향도 DEM UV 스케일 적용
+  vec2 demRayDir = rayDir * uDemUvScale;
+  float demStepSize = stepSize;
+
+  float height = startElevation;
+  float traveledMeters = 0.0;
+
+  for (int i = 0; i < 1024; i++) {
+    pos += demRayDir * demStepSize;
+    height += heightPerStep;
+    traveledMeters += horizontalMetersPerStep;
+
+    if (pos.x < 0.0 || pos.x > 1.0 || pos.y < 0.0 || pos.y > 1.0) {
+      return 1.0;
+    }
+    if (traveledMeters > 120000.0) {
+      return 1.0;
+    }
+
+    float terrain = sampleElevationDirect(pos);
+    if (terrain > height) {
+      return 0.0;
+    }
+  }
+
+  return 1.0;
+}
+
+// 노멀 계산 (DEM UV 공간에서)
+vec3 calculateNormal(vec2 demUv) {
+  float texelSize = 1.0 / 512.0;
+  float hL = sampleElevationDirect(demUv - vec2(texelSize, 0.0));
+  float hR = sampleElevationDirect(demUv + vec2(texelSize, 0.0));
+  float hD = sampleElevationDirect(demUv - vec2(0.0, texelSize));
+  float hU = sampleElevationDirect(demUv + vec2(0.0, texelSize));
+  float metersPerTexel = max(0.01, uMetersPerTexel);
+  float invTwoTexelsMeters = 1.0 / (2.0 * metersPerTexel);
+  float dzdx = (hR - hL) * invTwoTexelsMeters * uElevationScale;
+  float dzdy = (hU - hD) * invTwoTexelsMeters * uElevationScale;
+  return normalize(vec3(-dzdx, -dzdy, 1.0));
+}
+
+void main() {
+  vec2 demUv = transformDemUv(vUv);
+  float elevation = sampleElevationDirect(demUv);
+  float shadow = traceShadow(vUv, elevation);
+
+  // 타일 위치에서 로컬 태양 방향 계산 (traceShadow와 동일한 방식)
+  float n = pow(2.0, uZoomLevel);
+  float tileXF = uTileX + vUv.x;
+  float tileYF = uTileY + (1.0 - vUv.y);
+  float lon = (tileXF / n) * (2.0 * 3.141592653589793) - 3.141592653589793;
+  float mercY = 3.141592653589793 * (1.0 - (2.0 * tileYF / n));
+  float lat = atan(sinh(mercY));
+  vec3 pixelPos = normalize(vec3(
+    cos(lat) * cos(lon),
+    sin(lat),
+    -cos(lat) * sin(lon)
+  ));
+  vec3 east;
+  vec3 north;
+  buildSurfaceFrame(pixelPos, east, north);
+  vec3 up = pixelPos;
+  vec3 localSunDir = vec3(
+    dot(uSunDirection, east),
+    dot(uSunDirection, north),
+    dot(uSunDirection, up)
+  );
+  vec3 localLightDir = normalize(vec3(localSunDir.xy, max(0.05, localSunDir.z)));
+
+  // wwwtyro 원본: diffuse = clamp(dot(normal, sunDirection), 0, 1)
+  vec3 localNormal = calculateNormal(demUv);
+  float diffuse = clamp(dot(localNormal, localLightDir), 0.0, 1.0);
+
+  // 이전 누적값 읽기
+  float prevShadow = texture2D(uPrevShadow, vUv).r;
+
+  // wwwtyro 방식 누적: shadow가 1이면 diffuse를 더함, 0이면 안 더함
+  float newShadow = clamp(prevShadow + shadow * diffuse * uWeight, 0.0, 1.0);
+
+  gl_FragColor = vec4(vec3(newShadow), 1.0);
+}
