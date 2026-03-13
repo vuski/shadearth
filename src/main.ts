@@ -1493,8 +1493,8 @@ settingsGui
   });
 
 settingsGui
-  .add(renderSettings, "sunJitter", 1, 500, 1)
-  .name("Sun Jitter")
+  .add(renderSettings, "sunJitter", 1, 100, 1)
+  .name("Soft Shadow")
   .onChange((value: number) => {
     shadowRenderer.setSunRadiusMultiplier(value);
     shadowRenderer.reset();
@@ -1530,6 +1530,12 @@ updateRenderButtonStyle();
 // === Post Processing GUI ===
 const postProcessGui = new GUI({ title: "Post Processing", width: 280 });
 applyPosition(postProcessGui.domElement, UI_POSITIONS.postProcess);
+
+// 모바일에서는 Post Processing 패널 기본 접기
+const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+if (isMobile) {
+  postProcessGui.close();
+}
 
 // Debug View 드롭다운 (F2 키와 동일)
 const debugViewOptions = {
