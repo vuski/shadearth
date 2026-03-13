@@ -237,14 +237,12 @@ class DemFallbackPlugin {
 
   // URL에서 z/x/y 추출 후 줌 레벨 기반 URL로 변환
   private transformUrl(url: string): string {
-    // planet 또는 dem5m1m_terrain 경로 매칭 (DEM 타일만)
-    const match = url.match(
-      /\/(planet|dem5m1m_terrain)\/(\d+)\/(\d+)\/(\d+)\.webp/,
-    );
+    // mapterhorn URL: /{z}/{x}/{y}.webp
+    const match = url.match(/\/(\d+)\/(\d+)\/(\d+)\.webp$/);
     if (match) {
-      const z = parseInt(match[2], 10);
-      const x = parseInt(match[3], 10);
-      const y = parseInt(match[4], 10);
+      const z = parseInt(match[1], 10);
+      const x = parseInt(match[2], 10);
+      const y = parseInt(match[3], 10);
       return getDemTileInfo(z, x, y).url;
     }
     return url;
@@ -929,15 +927,20 @@ function getApproximateZoom(): number {
 function updatePlaceLabels(): void {
   if (!renderSettings.showPlaceLabels) return;
 
-  // 현재 로드된 타일 좌표 수집
+  const zoom = getApproximateZoom();
+  const targetZ = Math.max(1, Math.floor(zoom) + 2); // 카메라 줌 + 2
+
+  // 현재 줌에 가장 가까운 타일만 수집 (±1 범위)
   const visibleCoords: Array<{ z: number; x: number; y: number }> = [];
   for (const key of loadedTiles.keys()) {
     const [z, x, y] = key.split("/").map(Number);
-    visibleCoords.push({ z, x, y });
+    // targetZ와 비슷한 줌의 타일만 사용
+    if (z >= targetZ - 1 && z <= targetZ + 2) {
+      visibleCoords.push({ z, x, y });
+    }
   }
 
   if (visibleCoords.length > 0) {
-    const zoom = getApproximateZoom();
     placeLabelsManager.updateVisibleTiles(zoom, visibleCoords);
   }
 }
@@ -1532,7 +1535,10 @@ const postProcessGui = new GUI({ title: "Post Processing", width: 280 });
 applyPosition(postProcessGui.domElement, UI_POSITIONS.postProcess);
 
 // 모바일에서는 Post Processing 패널 기본 접기
-const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+const isMobile =
+  /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+    navigator.userAgent,
+  );
 if (isMobile) {
   postProcessGui.close();
 }

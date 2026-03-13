@@ -5,10 +5,20 @@ import {
 } from "three/addons/renderers/CSS2DRenderer.js";
 import Pbf from "pbf";
 import { VectorTile } from "@mapbox/vector-tile";
+import { PMTiles } from "pmtiles";
 
-// OSM Shortbread 벡터 타일 서버
-const OSM_VECTOR_TILE_URL =
-  "https://vector.openstreetmap.org/shortbread_v1/{z}/{x}/{y}.mvt";
+// 로컬 PMTiles 파일 (places + physical_point 레이어)
+const PMTILES_URL = "https://tiles.vw-lab.uk/labels.pmtiles";
+
+// PMTiles 인스턴스 (싱글톤)
+let pmtilesInstance: PMTiles | null = null;
+
+function getPMTiles(): PMTiles {
+  if (!pmtilesInstance) {
+    pmtilesInstance = new PMTiles(PMTILES_URL);
+  }
+  return pmtilesInstance;
+}
 
 export interface PlaceLabel {
   name: string;
@@ -28,44 +38,29 @@ interface LabelData {
 }
 
 // Place labels 전용 줌 레벨 (위성 타일과 독립)
-const PLACE_LABELS_MAX_ZOOM = 8;
+const PLACE_LABELS_MAX_ZOOM = 10;
 
-// Shortbread는 name, name_de, name_en만 제공
-// name: 로컬 언어 (한국=한글, 중국=중문, 러시아=키릴 등)
-// name_en: 영어
-// 브라우저 언어의 로컬 이름이 있으면 사용, 없으면 영어
+// 브라우저 언어 가져오기
 function getBrowserLang(): string {
   return navigator.language.split("-")[0]; // "ko-KR" → "ko"
 }
 
 const BROWSER_LANG = getBrowserLang();
 
-// 문자열이 해당 언어인지 확인 (간단한 유니코드 범위 체크)
-function isKorean(str: string): boolean {
-  return /[\uAC00-\uD7AF]/.test(str); // 한글 음절
-}
+/**
+ * Protomaps에서 다국어 이름 가져오기
+ * name:{lang} 필드 사용 (예: name:ko, name:en, name:ja)
+ */
+function getLocalizedName(props: Record<string, unknown>): string | undefined {
+  // 1. 사용자 언어로 된 이름 우선
+  const langKey = `name:${BROWSER_LANG}`;
+  if (props[langKey]) return props[langKey] as string;
 
-function isCJK(str: string): boolean {
-  return /[\u4E00-\u9FFF\u3400-\u4DBF]/.test(str); // 한중일 한자
-}
+  // 2. 영어 fallback
+  if (props["name:en"]) return props["name:en"] as string;
 
-function isCyrillic(str: string): boolean {
-  return /[\u0400-\u04FF]/.test(str); // 키릴 문자
-}
-
-function isArabic(str: string): boolean {
-  return /[\u0600-\u06FF]/.test(str); // 아랍 문자
-}
-
-// 브라우저 언어에 맞는 이름인지 확인
-function matchesBrowserLang(name: string): boolean {
-  if (BROWSER_LANG === "ko") return isKorean(name);
-  if (BROWSER_LANG === "zh") return isCJK(name);
-  if (BROWSER_LANG === "ja") return isCJK(name) || /[\u3040-\u30FF]/.test(name);
-  if (BROWSER_LANG === "ru") return isCyrillic(name);
-  if (BROWSER_LANG === "ar") return isArabic(name);
-  // 라틴 언어들은 name_en 사용
-  return false;
+  // 3. 기본 이름 (현지어)
+  return props["name"] as string | undefined;
 }
 
 /**
@@ -82,50 +77,32 @@ function getMinPopulation(zoom: number): number {
 }
 
 /**
- * 줌 레벨에 따라 표시할 place kind 목록 반환
- * boundary_labels: country, state
- * place_labels: capital, state_capital, city, town, village, hamlet, suburb
+ * Protomaps pmap:kind 값에 따른 표시 여부
+ * places 레이어: country, region, locality
+ * physical_point 레이어: sea, ocean, lake, peak 등
  */
 function getVisibleKinds(zoom: number): Set<string> {
   if (zoom < 2) return new Set();
   if (zoom < 3) return new Set(["country"]);
-  if (zoom < 4) return new Set(["country", "capital"]);
-  if (zoom < 5) return new Set(["country", "capital", "state"]);
-  if (zoom < 6)
-    return new Set(["country", "capital", "state", "state_capital"]);
+  if (zoom < 4) return new Set(["country"]);
+  if (zoom < 5) return new Set(["country", "region"]);
+  if (zoom < 6) return new Set(["country", "region"]);
   if (zoom < 7)
-    return new Set([
-      "country",
-      "capital",
-      "state",
-      "state_capital",
-      "city",
-      "water", // 호수, 저수지
-    ]);
-  if (zoom < 10)
-    return new Set([
-      "country",
-      "capital",
-      "state",
-      "state_capital",
-      "city",
-      "town",
-      "water",
-      "river",
-    ]);
-  return new Set([
-    "country",
-    "capital",
-    "state",
-    "state_capital",
-    "city",
-    "town",
-    "village",
-    "hamlet",
-    "suburb",
-    "water",
-    "river",
-  ]);
+    return new Set(["country", "region", "locality", "sea", "ocean", "lake"]);
+  return new Set(["country", "region", "locality", "sea", "ocean", "lake"]);
+}
+
+/**
+ * pmap:kind → CSS 클래스 매핑
+ */
+function kindToClass(kind: string, isCapital: boolean): string {
+  if (kind === "country") return "country";
+  if (kind === "region") return "state";
+  if (kind === "locality") {
+    return isCapital ? "capital" : "city";
+  }
+  if (kind === "sea" || kind === "ocean" || kind === "lake") return "water";
+  return "city";
 }
 
 /**
@@ -142,7 +119,12 @@ const EARTH_CIRCUMFERENCE = 40075016.686; // 미터
  * MVT 타일 내 좌표 → WGS84 위도 변환
  * geomY=0이 타일 상단(북쪽), geomY=extent가 타일 하단(남쪽)
  */
-function mvtToLat(tileY: number, geomY: number, extent: number, z: number): number {
+function mvtToLat(
+  tileY: number,
+  geomY: number,
+  extent: number,
+  z: number,
+): number {
   const numTiles = Math.pow(2, z);
   const tileSize = EARTH_CIRCUMFERENCE / numTiles; // 타일당 미터
 
@@ -154,7 +136,12 @@ function mvtToLat(tileY: number, geomY: number, extent: number, z: number): numb
   const mercatorY = tileTopMeters - offsetMeters;
 
   // Web Mercator Y → WGS84 위도
-  return (180 / Math.PI) * (2 * Math.atan(Math.exp(mercatorY / (EARTH_CIRCUMFERENCE / (2 * Math.PI)))) - Math.PI / 2);
+  return (
+    (180 / Math.PI) *
+    (2 *
+      Math.atan(Math.exp(mercatorY / (EARTH_CIRCUMFERENCE / (2 * Math.PI)))) -
+      Math.PI / 2)
+  );
 }
 
 // WGS84 ellipsoid 상수 (tilesRenderer와 동일하게)
@@ -187,7 +174,7 @@ function lonLatToWorld(lon: number, lat: number): THREE.Vector3 {
 
 /**
  * Place Labels Manager
- * OSM Shortbread 벡터 타일에서 지명을 읽어 3D 지구본 위에 표시
+ * PMTiles에서 지명을 읽어 3D 지구본 위에 표시
  * 위성 타일과 독립적인 줌 레벨로 관리하여 레이블 수 제어
  */
 export class PlaceLabelsManager {
@@ -240,14 +227,8 @@ export class PlaceLabelsManager {
       .place-label.country { font-size: 16px; font-weight: 600; color: #fff; letter-spacing: 1px; }
       .place-label.state { font-size: 13px; font-weight: 500; color: #eee; letter-spacing: 0.5px; }
       .place-label.capital { font-size: 13px; font-weight: 600; }
-      .place-label.state_capital { font-size: 12px; font-weight: 600; }
       .place-label.city { font-size: 11px; font-weight: 500; }
-      .place-label.town { font-size: 10px; }
-      .place-label.village { font-size: 9px; }
-      .place-label.hamlet { font-size: 8px; }
-      .place-label.suburb { font-size: 8px; color: #ddd; }
       .place-label.water { font-size: 10px; font-weight: 400; color: #8ecae6; font-style: italic; }
-      .place-label.river { font-size: 9px; font-weight: 400; color: #8ecae6; font-style: italic; }
     `;
     document.head.appendChild(style);
   }
@@ -271,23 +252,30 @@ export class PlaceLabelsManager {
    * 위성 타일과 독립적으로 더 낮은 줌 레벨 사용
    */
   updateVisibleTiles(
-    cameraZoom: number,
+    _cameraZoom: number,
     visibleTileCoords: Array<{ z: number; x: number; y: number }>,
   ): void {
-    // Place labels 전용 줌 레벨 계산 (최대 8)
-    const placeZoom = Math.min(
-      Math.floor(cameraZoom),
-      PLACE_LABELS_MAX_ZOOM,
-    );
+    // 로드된 타일 중 최대 줌 레벨 찾기 (최대 8로 제한)
+    let maxZ = 0;
+    for (const coord of visibleTileCoords) {
+      if (coord.z > maxZ) maxZ = coord.z;
+    }
+    const placeZoom = Math.min(maxZ, PLACE_LABELS_MAX_ZOOM);
 
-    // 현재 뷰포트의 타일들을 place 줌 레벨로 변환
+    // 최대 줌 타일만 사용
     const placeTiles = new Set<string>();
     for (const coord of visibleTileCoords) {
-      // 높은 줌 레벨 타일 → 낮은 줌 레벨 타일로 변환
-      const scale = Math.pow(2, coord.z - placeZoom);
-      const px = Math.floor(coord.x / scale);
-      const py = Math.floor(coord.y / scale);
-      placeTiles.add(`${placeZoom}/${px}/${py}`);
+      if (coord.z === maxZ) {
+        // 최대 줌 타일을 placeZoom으로 변환
+        if (maxZ === placeZoom) {
+          placeTiles.add(`${placeZoom}/${coord.x}/${coord.y}`);
+        } else if (maxZ > placeZoom) {
+          const scale = Math.pow(2, maxZ - placeZoom);
+          const px = Math.floor(coord.x / scale);
+          const py = Math.floor(coord.y / scale);
+          placeTiles.add(`${placeZoom}/${px}/${py}`);
+        }
+      }
     }
 
     // 새로운 타일만 로드
@@ -298,17 +286,23 @@ export class PlaceLabelsManager {
       }
     }
 
-    // 오래된 타일 정리 (뷰포트 밖) - persistent 레이블은 유지
+    // 오래된 타일 정리: 현재 placeZoom과 다른 줌 또는 뷰포트 밖
+    const tilesToRemove: string[] = [];
     for (const tileKey of this.loadedTiles) {
-      if (!placeTiles.has(tileKey)) {
-        const [z, x, y] = tileKey.split("/").map(Number);
-        this.removeTileLabels(z, x, y, false); // persistent는 유지
+      const [z] = tileKey.split("/").map(Number);
+      // 다른 줌 레벨이거나 현재 뷰포트에 없는 타일 제거
+      if (z !== placeZoom || !placeTiles.has(tileKey)) {
+        tilesToRemove.push(tileKey);
       }
+    }
+    for (const tileKey of tilesToRemove) {
+      const [z, x, y] = tileKey.split("/").map(Number);
+      this.removeTileLabels(z, x, y, true); // 모든 라벨 제거
     }
   }
 
   /**
-   * 타일의 place labels 로드 (내부 사용)
+   * 타일의 place labels 로드 (PMTiles에서)
    */
   private async loadTilePlaces(z: number, x: number, y: number): Promise<void> {
     const tileKey = `${z}/${x}/${y}`;
@@ -316,105 +310,50 @@ export class PlaceLabelsManager {
     this.loadedTiles.add(tileKey);
 
     try {
-      const url = OSM_VECTOR_TILE_URL.replace("{z}", String(z))
-        .replace("{x}", String(x))
-        .replace("{y}", String(y));
+      const pmtiles = getPMTiles();
+      const tileData = await pmtiles.getZxy(z, x, y);
 
-      const response = await fetch(url);
-      if (!response.ok) return;
+      if (!tileData || !tileData.data) return;
 
-      const data = await response.arrayBuffer();
+      // gzip 압축 해제 (필요한 경우)
+      let data = new Uint8Array(tileData.data);
+      if (data[0] === 0x1f && data[1] === 0x8b) {
+        // gzip 헤더 감지
+        const ds = new DecompressionStream("gzip");
+        const blob = new Blob([data]);
+        const decompressed = await new Response(
+          blob.stream().pipeThrough(ds),
+        ).arrayBuffer();
+        data = new Uint8Array(decompressed);
+      }
+
       const tile = new VectorTile(new Pbf(data));
 
       const visibleKinds = getVisibleKinds(z);
       const minPop = getMinPopulation(z);
 
-      // boundary_labels 레이어 파싱 (국가, 주/도 이름)
-      // admin_level: 2 = country, 4 = state/province
-      const boundaryLayer = tile.layers["boundary_labels"];
-      if (boundaryLayer) {
-        for (let i = 0; i < boundaryLayer.length; i++) {
-          const feature = boundaryLayer.feature(i);
-          const props = feature.properties;
-          const adminLevel = props.admin_level as number;
+      // places 레이어 파싱 (국가, 지역, 도시)
+      const placesLayer = tile.layers["places"];
+      if (placesLayer) {
+        for (let i = 0; i < placesLayer.length; i++) {
+          const feature = placesLayer.feature(i);
+          const props = feature.properties as Record<string, unknown>;
 
-          // admin_level → kind 변환
-          let kind: string;
-          if (adminLevel === 2) {
-            kind = "country";
-          } else if (adminLevel === 4) {
-            kind = "state";
-          } else {
-            continue; // 다른 레벨은 무시
-          }
+          // pmap:kind 필드 사용
+          const kind = (props["pmap:kind"] || props["kind"]) as string;
+          if (!kind || !visibleKinds.has(kind)) continue;
 
-          if (!visibleKinds.has(kind)) continue;
-
-          // 브라우저 언어에 맞는 로컬 이름이 있으면 사용, 없으면 영어
-          const localName = props.name as string;
-          const englishName = props.name_en as string;
-          let name: string | undefined;
-          if (localName && matchesBrowserLang(localName)) {
-            name = localName;
-          } else {
-            name = englishName || localName;
-          }
+          // 다국어 이름 가져오기
+          const name = getLocalizedName(props);
           if (!name) continue;
 
-          // MVT 좌표 → lon/lat
-          const geom = feature.loadGeometry()[0][0];
-          const extent = feature.extent || 4096;
-          const lon = tile2lon(x + geom.x / extent, z);
-          const lat = mvtToLat(y, geom.y, extent, z);
+          const population = (props["population"] as number) || 0;
+          const populationRank = (props["pmap:population_rank"] as number) || 0;
+          const isCapital = props["capital"] === "yes";
 
-          // 국가/주는 이름 기반으로 중복 제거 (같은 국가가 여러 타일에 있음)
-          const globalKey = `${kind}:${name}`;
-          if (this.globalPlaces.has(globalKey)) continue;
-          this.globalPlaces.set(globalKey, { name, population: 0 });
-
-          const labelKey = `${tileKey}:${globalKey}`;
-          if (this.labels.has(labelKey)) continue;
-
-          this.createLabel({
-            name,
-            kind,
-            population: 0,
-            lon,
-            lat,
-            tileKey,
-            labelKey,
-            globalKey,
-          });
-        }
-      }
-
-      // place_labels 레이어 파싱 (도시, 마을 등)
-      const placeLayer = tile.layers["place_labels"];
-      if (placeLayer) {
-        for (let i = 0; i < placeLayer.length; i++) {
-          const feature = placeLayer.feature(i);
-          const props = feature.properties;
-          const kind = props.kind as string;
-
-          // 줌 레벨에 따른 필터링
-          if (!visibleKinds.has(kind)) continue;
-
-          // 브라우저 언어에 맞는 로컬 이름이 있으면 사용, 없으면 영어
-          const localName = props.name as string;
-          const englishName = props.name_en as string;
-          let name: string | undefined;
-          if (localName && matchesBrowserLang(localName)) {
-            name = localName;
-          } else {
-            name = englishName || localName;
-          }
-          if (!name) continue;
-
-          const population = (props.population as number) || 0;
-
-          // 인구 기반 필터링 (capital/state_capital은 항상 표시)
-          if (kind !== "capital" && kind !== "state_capital") {
-            if (population < minPop) continue;
+          // 인구 기반 필터링 (수도와 국가/지역은 항상 표시)
+          if (kind === "locality" && !isCapital) {
+            if (population < minPop && populationRank < 10) continue;
           }
 
           // MVT 좌표 → lon/lat
@@ -423,13 +362,15 @@ export class PlaceLabelsManager {
           const lon = tile2lon(x + geom.x / extent, z);
           const lat = mvtToLat(y, geom.y, extent, z);
 
-          // 전역 중복 제거 (좌표 기반, 소수점 2자리)
-          const globalKey = `${lon.toFixed(2)}:${lat.toFixed(2)}`;
+          // 국가/지역은 이름 기반으로 중복 제거
+          const globalKey =
+            kind === "locality"
+              ? `${lon.toFixed(2)}:${lat.toFixed(2)}`
+              : `${kind}:${name}`;
+
           const existing = this.globalPlaces.get(globalKey);
           if (existing) {
-            // 더 큰 인구의 도시가 있으면 스킵
             if (existing.population >= population) continue;
-            // 기존 레이블 제거하고 새로 생성
             this.removeGlobalLabel(globalKey);
           }
           this.globalPlaces.set(globalKey, { name, population });
@@ -439,37 +380,28 @@ export class PlaceLabelsManager {
 
           this.createLabel({
             name,
-            kind,
+            kind: kindToClass(kind, isCapital),
             population,
             lon,
             lat,
             tileKey,
             labelKey,
-            globalKey,
+            persistent: kind === "country" || kind === "region",
           });
         }
       }
 
-      // water_polygons_labels 레이어 파싱 (바다, 호수 등)
-      const waterLayer = tile.layers["water_polygons_labels"];
-      if (waterLayer) {
-        for (let i = 0; i < waterLayer.length; i++) {
-          const feature = waterLayer.feature(i);
-          const props = feature.properties;
-          const kind = props.kind as string;
+      // physical_point 레이어 파싱 (바다, 호수 등)
+      const physicalLayer = tile.layers["physical_point"];
+      if (physicalLayer) {
+        for (let i = 0; i < physicalLayer.length; i++) {
+          const feature = physicalLayer.feature(i);
+          const props = feature.properties as Record<string, unknown>;
 
-          // 줌 레벨에 따른 필터링
-          if (!visibleKinds.has(kind)) continue;
+          const kind = (props["pmap:kind"] || props["kind"]) as string;
+          if (!kind || !visibleKinds.has(kind)) continue;
 
-          // 브라우저 언어에 맞는 로컬 이름이 있으면 사용, 없으면 영어
-          const localName = props.name as string;
-          const englishName = props.name_en as string;
-          let name: string | undefined;
-          if (localName && matchesBrowserLang(localName)) {
-            name = localName;
-          } else {
-            name = englishName || localName;
-          }
+          const name = getLocalizedName(props);
           if (!name) continue;
 
           // MVT 좌표 → lon/lat
@@ -478,7 +410,7 @@ export class PlaceLabelsManager {
           const lon = tile2lon(x + geom.x / extent, z);
           const lat = mvtToLat(y, geom.y, extent, z);
 
-          // 바다 이름은 이름 기반 중복 제거 (국가와 동일하게)
+          // 바다/호수는 이름 기반 중복 제거
           const globalKey = `${kind}:${name}`;
           if (this.globalPlaces.has(globalKey)) continue;
           this.globalPlaces.set(globalKey, { name, population: 0 });
@@ -488,13 +420,13 @@ export class PlaceLabelsManager {
 
           this.createLabel({
             name,
-            kind,
+            kind: kindToClass(kind, false),
             population: 0,
             lon,
             lat,
             tileKey,
             labelKey,
-            globalKey,
+            persistent: kind === "sea" || kind === "ocean",
           });
         }
       }
@@ -528,9 +460,10 @@ export class PlaceLabelsManager {
     lat: number;
     tileKey: string;
     labelKey: string;
-    globalKey: string;
+    persistent: boolean;
   }): void {
-    const { name, kind, population, lon, lat, tileKey, labelKey } = params;
+    const { name, kind, population, lon, lat, tileKey, labelKey, persistent } =
+      params;
 
     const div = document.createElement("div");
     div.className = `place-label ${kind}`;
@@ -539,9 +472,6 @@ export class PlaceLabelsManager {
     const label = new CSS2DObject(div);
     const position = lonLatToWorld(lon, lat);
     label.position.copy(position);
-
-    // 국가/주는 persistent (줌 변경 시에도 유지)
-    const persistent = kind === "country" || kind === "state";
 
     this.labelsGroup.add(label);
     this.labels.set(labelKey, {
@@ -595,10 +525,27 @@ export class PlaceLabelsManager {
 
   /**
    * 줌 레벨 변경 시 레이블 가시성 업데이트
+   * 현재 줌보다 높은 줌 레벨의 타일들을 즉시 정리
    */
   updateZoom(zoom: number): void {
     this.currentZoom = zoom;
-    // 실제 가시성 업데이트는 render()에서 처리
+
+    // 현재 줌 기준 타일 레벨 계산
+    const targetPlaceZoom = Math.min(Math.floor(zoom) + 2, PLACE_LABELS_MAX_ZOOM);
+
+    // 라벨들의 실제 tileKey 기준으로 정리 (loadedTiles가 아닌 labels에서 직접)
+    const tilesToRemove = new Set<string>();
+    for (const [, data] of this.labels) {
+      const [z] = data.tileKey.split("/").map(Number);
+      if (z > targetPlaceZoom) {
+        tilesToRemove.add(data.tileKey);
+      }
+    }
+
+    for (const tileKey of tilesToRemove) {
+      const [z, x, y] = tileKey.split("/").map(Number);
+      this.removeTileLabels(z, x, y, true);
+    }
   }
 
   /**
@@ -633,13 +580,34 @@ export class PlaceLabelsManager {
     this.frustum.setFromProjectionMatrix(this.projScreenMatrix);
 
     const cameraPos = camera.position;
-    const visibleKinds = getVisibleKinds(this.currentZoom);
+    // 타일 줌에 맞춰 가시성 결정 (currentZoom 대신 8 이상으로 설정)
+    const effectiveZoom = Math.max(this.currentZoom, 8);
+    const visibleKinds = getVisibleKinds(effectiveZoom);
+
+    // kind → CSS class 매핑 (역변환)
+    const kindClassMap: Record<string, string[]> = {
+      country: ["country"],
+      region: ["state"],
+      locality: ["capital", "city"],
+      sea: ["water"],
+      ocean: ["water"],
+      lake: ["water"],
+    };
 
     // 각 레이블의 가시성 체크
     for (const data of this.labels.values()) {
       const elem = data.object.element;
 
-      if (!visibleKinds.has(data.kind)) {
+      // CSS 클래스에서 원래 kind 찾기
+      let isVisible = false;
+      for (const [kind, classes] of Object.entries(kindClassMap)) {
+        if (classes.includes(data.kind) && visibleKinds.has(kind)) {
+          isVisible = true;
+          break;
+        }
+      }
+
+      if (!isVisible) {
         data.object.visible = false;
         elem.style.visibility = "hidden";
         continue;

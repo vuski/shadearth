@@ -140,3 +140,4 @@ dist
 
 # Claude Code local settings
 .claude/
+pmtiles.exe
