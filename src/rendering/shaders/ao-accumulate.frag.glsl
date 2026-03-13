@@ -65,6 +65,92 @@ float sampleElevationDirect(vec2 demUv) {
   return decodeTerrarium(texture2D(demMap, clamp(demUv, 0.0, 1.0)));
 }
 
+// 인접 타일을 포함한 고도 샘플링
+// demUv: 0~1 범위를 벗어날 수 있음
+// 반환: 고도 값, outOfBounds=true면 2타일 이상 벗어남
+float sampleElevationWithNeighbors(vec2 demUv, out bool outOfBounds) {
+  outOfBounds = false;
+  vec2 localUv = demUv;
+  int tileOffsetX = 0;
+  int tileOffsetY = 0;
+
+  // X축 경계 처리
+  if (demUv.x < 0.0) {
+    tileOffsetX = -1;  // West
+    localUv.x = demUv.x + 1.0;
+  } else if (demUv.x > 1.0) {
+    tileOffsetX = 1;   // East
+    localUv.x = demUv.x - 1.0;
+  }
+
+  // Y축 경계 처리 (UV y > 1.0 = North, y < 0.0 = South)
+  if (demUv.y < 0.0) {
+    tileOffsetY = -1;  // South
+    localUv.y = demUv.y + 1.0;
+  } else if (demUv.y > 1.0) {
+    tileOffsetY = 1;   // North
+    localUv.y = demUv.y - 1.0;
+  }
+
+  // 2타일 이상 벗어남 (1회 보정 후에도 범위 밖)
+  if (localUv.x < 0.0 || localUv.x > 1.0 || localUv.y < 0.0 || localUv.y > 1.0) {
+    outOfBounds = true;
+    return 0.0;
+  }
+
+  vec2 clampedUv = clamp(localUv, 0.001, 0.999);
+
+  // 중앙 타일
+  if (tileOffsetX == 0 && tileOffsetY == 0) {
+    return decodeTerrarium(texture2D(demMap, clampedUv));
+  }
+
+  // 8방향 인접 타일 (존재 여부 체크 포함)
+  // N (UV y > 1.0)
+  if (tileOffsetX == 0 && tileOffsetY == 1) {
+    if (uHasN < 0.5) { outOfBounds = true; return 0.0; }
+    return decodeTerrarium(texture2D(demMapN, clampedUv));
+  }
+  // S (UV y < 0.0)
+  if (tileOffsetX == 0 && tileOffsetY == -1) {
+    if (uHasS < 0.5) { outOfBounds = true; return 0.0; }
+    return decodeTerrarium(texture2D(demMapS, clampedUv));
+  }
+  // E (UV x > 1.0)
+  if (tileOffsetX == 1 && tileOffsetY == 0) {
+    if (uHasE < 0.5) { outOfBounds = true; return 0.0; }
+    return decodeTerrarium(texture2D(demMapE, clampedUv));
+  }
+  // W (UV x < 0.0)
+  if (tileOffsetX == -1 && tileOffsetY == 0) {
+    if (uHasW < 0.5) { outOfBounds = true; return 0.0; }
+    return decodeTerrarium(texture2D(demMapW, clampedUv));
+  }
+  // NE
+  if (tileOffsetX == 1 && tileOffsetY == 1) {
+    if (uHasNE < 0.5) { outOfBounds = true; return 0.0; }
+    return decodeTerrarium(texture2D(demMapNE, clampedUv));
+  }
+  // SE
+  if (tileOffsetX == 1 && tileOffsetY == -1) {
+    if (uHasSE < 0.5) { outOfBounds = true; return 0.0; }
+    return decodeTerrarium(texture2D(demMapSE, clampedUv));
+  }
+  // SW
+  if (tileOffsetX == -1 && tileOffsetY == -1) {
+    if (uHasSW < 0.5) { outOfBounds = true; return 0.0; }
+    return decodeTerrarium(texture2D(demMapSW, clampedUv));
+  }
+  // NW
+  if (tileOffsetX == -1 && tileOffsetY == 1) {
+    if (uHasNW < 0.5) { outOfBounds = true; return 0.0; }
+    return decodeTerrarium(texture2D(demMapNW, clampedUv));
+  }
+
+  outOfBounds = true;
+  return 0.0;
+}
+
 // 노멀 계산 (DEM UV 공간에서)
 vec3 calculateNormal(vec2 demUv) {
   float texelSize = 1.0 / 512.0;
@@ -100,12 +186,11 @@ float traceAO(vec2 startDemUV, float startElevation, vec3 localNormal) {
     rayPos += rayStepXYZ;
     rayPos.z += rayStepZ;
 
-    // DEM UV 범위 체크 (0~1)
-    if (rayPos.x < 0.0 || rayPos.x > 1.0 || rayPos.y < 0.0 || rayPos.y > 1.0) {
+    bool outOfBounds;
+    float terrain = sampleElevationWithNeighbors(rayPos.xy, outOfBounds) * aoScale / metersPerTexel;
+    if (outOfBounds) {
       return 1.0;
     }
-
-    float terrain = sampleElevationDirect(rayPos.xy) * aoScale / metersPerTexel;
 
     if (rayPos.z < terrain) {
       return 0.0;
